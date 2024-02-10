@@ -59,7 +59,7 @@ def load_document_batch(filepaths):
             return (data_list, filepaths)
 
 
-def load_documents(source_dir: str) -> list[Document]:
+def load_documents(source_dir: str, multithread: bool = False) -> list[Document]:
     # Loads all documents from the source documents directory, including nested folders
     paths = []
     for root, _, files in os.walk(source_dir):
@@ -74,7 +74,30 @@ def load_documents(source_dir: str) -> list[Document]:
     n_workers = min(INGEST_THREADS, max(len(paths), 1))
     chunksize = round(len(paths) / n_workers)
     docs = []
-    with ProcessPoolExecutor(n_workers) as executor:
+    if multithread:
+        with ProcessPoolExecutor(n_workers) as executor:
+            futures = []
+            # split the load operations into chunks
+            for i in range(0, len(paths), chunksize):
+                # select a chunk of filenames
+                filepaths = paths[i : (i + chunksize)]
+                # submit the task
+                try:
+                    future = executor.submit(load_document_batch, filepaths)
+                except Exception as ex:
+                    file_log("executor task failed: %s" % (ex))
+                    future = None
+                if future is not None:
+                    futures.append(future)
+            # process all results
+            for future in as_completed(futures):
+                # open the file and load the data
+                try:
+                    contents, _ = future.result()
+                    docs.extend(contents)
+                except Exception as ex:
+                    file_log("Exception: %s" % (ex))
+    else:
         futures = []
         # split the load operations into chunks
         for i in range(0, len(paths), chunksize):
@@ -82,20 +105,21 @@ def load_documents(source_dir: str) -> list[Document]:
             filepaths = paths[i : (i + chunksize)]
             # submit the task
             try:
-                future = executor.submit(load_document_batch, filepaths)
+                # future = executor.submit(load_document_batch, filepaths)
+                future = load_document_batch(filepaths)
             except Exception as ex:
-                file_log("executor task failed: %s" % (ex))
+                file_log('executor task failed: %s' % (ex))
                 future = None
             if future is not None:
                 futures.append(future)
         # process all results
-        for future in as_completed(futures):
+        # for future in as_completed(futures):
+        for future in futures:
             # open the file and load the data
             try:
-                contents, _ = future.result()
-                docs.extend(contents)
+                docs.extend(future[0])
             except Exception as ex:
-                file_log("Exception: %s" % (ex))
+                file_log('Exception: %s' % (ex))
 
     return docs
 
